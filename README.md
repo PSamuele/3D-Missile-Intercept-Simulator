@@ -1,48 +1,48 @@
-# [cite_start]3D Missile Intercept Simulator Report [cite: 1]
+# 3D Missile Intercept Simulator Report
 
-## [cite_start]1.0 Executive Summary [cite: 2]
-[cite_start]This document outlines the architecture of a custom 3D Intercept Simulator developed in Python[cite: 3]. [cite_start]The main purpose of this tool is to test missile guidance algorithms[cite: 4]. [cite_start]Instead of using basic, hardcoded trajectories, the simulation forces the target to evade using realistic flight mechanics and randomized maneuvers[cite: 5]. [cite_start]This setup allows for a practical validation of True Proportional Navigation (TPN) against a dynamically reacting target[cite: 6].
-
----
-
-## [cite_start]2.0 Target Kinematics and Structural Limits [cite: 7]
-[cite_start]For the simulation to be valid, the target aircraft cannot perform maneuvers that violate physics[cite: 8]. [cite_start]The target is modeled as a point-mass, but its turning capability is strictly linked to its structural load factor ($nz_{max}$)[cite: 9]. [cite_start]In a coordinated turn, the maximum turn rate ($\omega_{max}$) is constrained by how much G-force the airframe can handle before structural failure[cite: 10]. [cite_start]The simulator calculates this limit dynamically using the following relationship[cite: 11]:
-
-[cite_start]$$\omega_{max} = \min \left( \text{heading\_rate\_limit}, \frac{(nz_{max} - 1) \cdot g}{V} \right)$$ [cite: 12]
-
-[cite_start]It is important to note that this equation is a conscious, first-order approximation[cite: 13]. [cite_start]It was chosen to keep computational costs low while still providing a highly realistic constraint: as the target flies faster (higher V), its ability to turn sharply decreases[cite: 14]. [cite_start]This effectively models a realistic maneuverability envelope[cite: 15].
+## 1.0 Executive Summary
+This project features a custom-built 3D Intercept Simulator written in Python. The core objective of the tool is to evaluate missile guidance algorithms. Rather than relying on simple, pre-programmed paths, the simulation requires the target to perform evasive actions utilizing realistic flight dynamics and unpredictable maneuvers. This environment enables the practical testing and validation of True Proportional Navigation (TPN) against an actively defending target.
 
 ---
 
-## [cite_start]3.0 Interceptor Dynamics and TPN Guidance [cite: 16]
-[cite_start]The interceptor uses True Proportional Navigation (TPN) to reach the target[cite: 17]. [cite_start]TPN works by predicting where the target is going, rather than pointing at where it is right now[cite: 18]. [cite_start]It does this by reacting to the rotation rate of the Line-Of-Sight (LOS) vector[cite: 19]:
+## 2.0 Target Kinematics and Structural Limits
+To ensure physical accuracy, the target aircraft is restricted from executing impossible maneuvers. Although simulated as a point-mass, its turning performance is strictly bound by its maximum structural load factor (nz_max). During a coordinated turn, the highest achievable turn rate (omega_max) is limited by the G-forces the airframe can sustain without breaking. The simulation computes this limitation dynamically with the formula:
 
-[cite_start]$$\vec{a}_{cmd} = N' \cdot V_c \cdot (\vec{\omega}_{LOS} \times \hat{r})$$ [cite: 20]
+    omega_max = min( heading_rate_limit, (nz_max - 1) * g / V )
 
-[cite_start]In practical terms, N' (the Navigation Ratio) acts as an aggressiveness multiplier[cite: 21]. [cite_start]If the target moves and the LOS shifts by 1 degree, a missile with N'=4 will command a turn 4 times as sharp to "pull lead" and establish a collision course[cite: 22]. [cite_start]If N' is too low, the missile just chases the target's tail[cite: 23]. [cite_start]If N' is too high, it overreacts to every minor movement and wastes its kinetic energy[cite: 24]. 
-
-[cite_start]Additionally, during the unpowered coast phase, the code adds a continuous [0, 0, +g] upward acceleration command[cite: 25]. [cite_start]This gravitational compensation prevents the missile from dropping under its own weight, which would otherwise cause a false rotation in the LOS calculation and waste steering energy[cite: 26].
+It is important to note that this equation is a conscious, first-order approximation. It was chosen to keep computational costs low while still providing a highly realistic constraint: as the target flies faster (higher V), its ability to turn sharply decreases. This effectively models a realistic maneuverability envelope.
 
 ---
 
-## [cite_start]4.0 Random Evasion and Integration [cite: 27]
-[cite_start]To thoroughly test the guidance law, the target's maneuvers are triggered by a Poisson process[cite: 28]. [cite_start]In concrete terms, this means evasive maneuvers happen at random, unpredictable intervals rather than on a fixed timer[cite: 29]. [cite_start]The code sets an average wait time (e.g., 20 seconds), but the actual time between turns fluctuates constantly[cite: 30]. [cite_start]This accurately simulates a human pilot making erratic, sudden decisions under pressure[cite: 31].
+## 3.0 Interceptor Dynamics and TPN Guidance
+The missile employs True Proportional Navigation (TPN) to intercept its target. TPN operates by anticipating the target's future position instead of aiming directly at its current location. It achieves this by responding to the rate of rotation of the Line-Of-Sight (LOS) vector:
 
-[cite_start]Every time a maneuver is triggered, the target selects a new heading and climb rate[cite: 32]. [cite_start]The simulation then updates the positions of both the target and the missile 20 times per second (dt = 0.05s) using Euler integration, calculating the engagement geometry step-by-step until intercept or miss[cite: 33].
+    a_cmd = N' * Vc * (omega_LOS × r_hat)
+
+In practical terms, N' (the Navigation Ratio) acts as an aggressiveness multiplier. If the target moves and the LOS shifts by 1 degree, a missile with N'=4 will command a turn 4 times as sharp to "pull lead" and establish a collision course. If N' is too low, the missile just chases the target's tail. If N' is too high, it overreacts to every minor movement and wastes its kinetic energy. 
+
+Additionally, during the unpowered coast phase, the code adds a continuous [0, 0, +g] upward acceleration command. This gravitational compensation prevents the missile from dropping under its own weight, which would otherwise cause a false rotation in the LOS calculation and waste steering energy.
 
 ---
 
-## [cite_start]5.0 Workflow and AI Assistance [cite: 34]
-[cite_start]The core flight mechanics, the TPN vector mathematics, and the integration logic were developed and programmed manually[cite: 35]. [cite_start]However, to speed up the workflow, Google Gemini was used within VS Code strictly as a programming assistant[cite: 36]. [cite_start]Specifically, the AI was used to write the boilerplate code for the visual outputs[cite: 37]. [cite_start]It helped structure the complex Matplotlib 3D projections and align the time-series data for the diagnostic dashboard[cite: 38]. [cite_start]Using AI to handle the UI and plotting syntax allowed the primary engineering focus to remain on getting the physics and the math right[cite: 39].
+## 4.0 Random Evasion and Integration
+To rigorously evaluate the guidance logic, target maneuvers are initiated via a Poisson process. Practically, this ensures evasions occur at random, unforeseen moments instead of following a predictable schedule. While an average interval is set (such as 20 seconds), the exact time between movements varies continuously, closely mimicking a human pilot making sudden, erratic choices under stress.
+
+Every time a maneuver is triggered, the target selects a new heading and climb rate. The simulation then updates the positions of both the target and the missile 20 times per second (dt = 0.05s) using Euler integration, calculating the engagement geometry step-by-step until intercept or miss.
 
 ---
 
-## [cite_start]6.0 Current Limitations and Next Steps [cite: 40]
-[cite_start]This simulator provides a solid baseline, but there are clear steps for future improvement[cite: 41]:
+## 5.0 Workflow and AI Assistance
+The fundamental flight mechanics, TPN vector calculations, and numerical integration were all derived and coded by hand. To accelerate the development process, an AI assistant was utilized inside the IDE, specifically to generate boilerplate code for data visualization. This included structuring the Matplotlib 3D plots and organizing time-series data for the telemetry dashboard, allowing the core engineering effort to stay focused on physics and mathematics.
 
-* [cite_start]**Aerodynamic Drag:** The current coast phase assumes constant velocity[cite: 42]. [cite_start]Adding Mach-dependent drag coefficients (Cd) will allow the simulator to calculate the missile's actual kinematic range[cite: 43].
-* [cite_start]**6-DOF Rigid Body:** Upgrading from a 3-DOF point-mass model to 6 Degrees of Freedom[cite: 44]. [cite_start]This will allow for the simulation of roll rates, angle of attack, and actuator delay[cite: 45].
-* [cite_start]**Advanced Guidance (APN):** Implementing Augmented Proportional Navigation (APN)[cite: 46]. [cite_start]APN estimates the target's acceleration (often using a Kalman filter) to intercept highly maneuverable threats much more efficiently than standard TPN[cite: 46].
+---
+
+## 6.0 Current Limitations and Next Steps
+While this simulation establishes a robust foundation, several areas are planned for future enhancement:
+
+* **Aerodynamic Drag:** The existing coasting phase does not account for deceleration. Integrating Mach-dependent drag (Cd) will enable accurate kinematic range calculations.
+* **6-DOF Rigid Body:** Evolving from a 3-DOF point-mass to a full 6 Degrees of Freedom model, allowing for the inclusion of angle of attack, roll dynamics, and control surface delays.
+* **Advanced Guidance (APN):** Transitioning to Augmented Proportional Navigation (APN). By estimating the target's acceleration (typically via a Kalman filter), APN can counter highly agile threats far more effectively than basic TPN.
 
 ---
 
