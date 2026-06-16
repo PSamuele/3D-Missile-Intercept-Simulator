@@ -2,31 +2,31 @@
 """
 missile_intercept_sim.py
 ========================
-Simulazione 3D di intercettazione missilistica per ingegneria aeronautica.
+3D missile interception simulation for aeronautical engineering.
 
-Fisica modellata
-----------------
-- Bersaglio : punto-massa in volo 3D con manovre casuali ma realistiche
-               (virate coordinate, salita/discesa), vincolate da nz_max.
-- Missile   : punto-massa con guida a Navigazione Proporzionale Vera (TPN),
-               fase boost + coast, compensazione gravitazionale.
-- Integrazione: Euler a passo fisso (dt=0.05 s, sufficiente per questa scala).
+Physics Modeled
+---------------
+- Target: 3D point-mass, realistic random maneuvers 
+          (coordinated turns, climb/descent), nz_max constraint.
+- Missile: Point-mass, True Proportional Navigation (TPN) guidance, 
+           boost/coast phases, gravity comp.
+- Integration: Fixed-step Euler (dt=0.05s).
 
-Avvio rapido
-------------
-    python missile_intercept_sim.py                   # parametri di default
-    python missile_intercept_sim.py --seed 42         # run riproducibile
+Quickstart
+----------
+    python missile_intercept_sim.py                   # default parameters
+    python missile_intercept_sim.py --seed 42         # reproducible run
     python missile_intercept_sim.py --nz-max 7 --target-speed 300
-    python missile_intercept_sim.py --help            # tutte le opzioni
+    python missile_intercept_sim.py --help            # all options
 
-Struttura del codice
---------------------
-  TargetConfig / MissileConfig / SimConfig  ← dataclass di configurazione
-  Target      ← dinamica bersaglio
-  Missile     ← guida PN + propulsione
-  InterceptionSimulation ← orchestratore
-  Visualizer  ← grafici multi-panel
-  main()      ← CLI (argparse)
+Code Structure
+--------------
+  TargetConfig / MissileConfig / SimConfig  <- config dataclasses
+  Target      <- target dynamics
+  Missile     <- PN guidance + propulsion
+  InterceptionSimulation <- orchestrator
+  Visualizer  <- multi-panel plots
+  main()      <- CLI (argparse)
 """
 
 from __future__ import annotations
@@ -49,106 +49,103 @@ G: float = 9.81  # accelerazione gravitazionale [m/s²]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Configurazioni
+# Configurations
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class TargetConfig:
     """
-    Parametri fisici e prestazionali del bersaglio aereo.
-
-    Tutti i valori sono modificabili a runtime (CLI o istanziazione diretta).
+    Target physical and performance parameters.
+    Modifiable at runtime (CLI/instantiation).
     """
 
     mass_kg: float = 15_000.0
-    """Massa del velivolo [kg]. Influisce sul fattore di carico strutturale."""
+    """Aircraft mass [kg]. Affects structural load factor."""
 
     speed_mps: float = 250.0
-    """Velocità di crociera [m/s] (≈ 900 km/h, ≈ Mach 0.75 a livello del mare)."""
+    """Cruise speed [m/s] (≈ Mach 0.75 at sea level)."""
 
     nz_max: float = 5.0
-    """Fattore di carico massimo strutturale [-]. Limita la velocità di rollio."""
+    """Max structural load factor [-]. Limits roll rate."""
 
     altitude_min_m: float = 3_000.0
-    """Quota minima di volo [m AGL]."""
+    """Min flight altitude [m AGL]."""
 
     altitude_max_m: float = 12_000.0
-    """Quota massima di volo [m AGL]."""
+    """Max flight altitude [m AGL]."""
 
     maneuver_period_s: float = 20.0
-    """Periodo medio tra cambi di manovra (processo di Poisson) [s].
-    Valori più bassi → bersaglio più aggressivo."""
+    """Avg maneuver period (Poisson process) [s]. Lower = more aggressive."""
 
     heading_rate_max_rads: float = 0.08
-    """Velocità massima di cambio rotta [rad/s] (≈ 4.6°/s)."""
+    """Max heading change rate [rad/s] (≈ 4.6°/s)."""
 
     climb_rate_max_mps: float = 25.0
-    """Rateo di salita/discesa massimo sostenuto [m/s]."""
+    """Max sustained climb/descent rate [m/s]."""
 
     spawn_range_km: float = 40.0
-    """Raggio massimo di comparsa del bersaglio dall'origine [km]."""
+    """Max spawn radius from origin [km]."""
 
     spawn_range_min_km: float = 15.0
-    """Raggio minimo di comparsa [km] (evita spawn troppo vicino)."""
+    """Min spawn radius [km] (prevents close spawn)."""
 
 
 @dataclass
 class MissileConfig:
     """
-    Parametri fisici e prestazionali del missile intercettore.
+    Missile physical and performance parameters.
     """
 
     mass_kg: float = 300.0
-    """Massa al lancio [kg]."""
+    """Launch mass [kg]."""
 
     thrust_N: float = 60_000.0
-    """Spinta motore nella fase boost [N]."""
+    """Boost phase thrust [N]."""
 
     burn_time_s: float = 5.0
-    """Durata della combustione [s]."""
+    """Engine burn duration [s]."""
 
     speed_max_mps: float = 900.0
-    """Velocità massima [m/s] (≈ Mach 2.6 a livello del mare)."""
+    """Max speed [m/s] (≈ Mach 2.6 at sea level)."""
 
     accel_max_lat_mps2: float = 300.0
-    """Accelerazione laterale massima [m/s²] (≈ 30g). Limite strutturale del missile."""
+    """Max lateral acceleration [m/s²] (≈ 30g). Structural limit."""
 
     nav_constant: float = 4.0
-    """Rapporto di navigazione effettivo N' (Proportional Navigation).
-    Valori tipici: 3–5. Maggiore → convergenza più rapida, ma più sensibile al rumore."""
+    """Navigation Ratio N' (Proportional Navigation). Typical: 3-5."""
 
     launch_pos: np.ndarray = field(
         default_factory=lambda: np.array([0.0, 0.0, 0.0])
     )
-    """Posizione di lancio [m] — punto fisso a terra (x, y, z=0)."""
+    """Launch position [m] - fixed ground point (x, y, z=0)."""
 
     launch_speed_mps: float = 80.0
-    """Velocità iniziale al momento del lancio [m/s]."""
+    """Initial launch speed [m/s]."""
 
 
 @dataclass
 class SimConfig:
     """
-    Parametri dell'integrazione numerica e terminazione della simulazione.
+    Numerical integration and simulation termination parameters.
     """
 
     dt: float = 0.05
-    """Passo temporale [s]. Riduci per maggiore accuratezza (più lento)."""
+    """Time step [s]. Reduce for accuracy (slower)."""
 
     t_max: float = 120.0
-    """Tempo massimo di simulazione [s]."""
+    """Max simulation time [s]."""
 
     kill_radius_m: float = 30.0
-    """Raggio di kill [m]. Intercettazione dichiarata se distanza < valore."""
+    """Kill radius [m]. Intercept declared if distance < value."""
 
     seed: Optional[int] = None
-    """Seed casuale per riproducibilità. None = casuale ogni run."""
+    """Random seed for reproducibility. None = random."""
 
     animate: bool = False
-    """Abilita animazione 3D (più lenta ma visivamente interessante)."""
+    """Enable 3D animation (slower but visual)."""
 
     save_fig: Optional[str] = None
-    """Se specificato, salva la figura in questo path (es. 'sim.png')."""
+    """If specified, save figure to path (e.g., 'sim.png')."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -157,23 +154,22 @@ class SimConfig:
 
 class Target:
     """
-    Bersaglio aereo con dinamica 3D realistica.
+    Aerial target with realistic 3D dynamics.
 
-    Modello: punto-massa in volo coordinato.
-    Manovre: cambi di rotta casuali + salita/discesa, con:
-      - rate-limiting della velocità angolare di imbardata
-      - vincolo di fattore di carico nz_max (virata coordinata)
-      - quote vincolate a [altitude_min_m, altitude_max_m]
+    Model: Point-mass in coordinated flight.
+    Maneuvers: Random heading changes + climb/descent, with:
+      - Yaw rate limiting
+      - Load factor constraint nz_max (coordinated turn)
+      - Altitude constraint [altitude_min_m, altitude_max_m]
 
-    La rotta iniziale è orientata approssimativamente verso l'origine ±45°
-    per garantire un ingaggio realistico.
+    Initial heading points towards origin ±45° for realistic engagement.
     """
 
     def __init__(self, cfg: TargetConfig, rng: np.random.Generator) -> None:
         self.cfg = cfg
         self.rng = rng
 
-        # ── Posizione iniziale casuale ─────────────────────────────────
+        # ── Random initial position ─────────────────────────────────
         r_km = rng.uniform(cfg.spawn_range_min_km, cfg.spawn_range_km)
         r_m = r_km * 1_000.0
         azimuth = rng.uniform(0.0, 2 * np.pi)
@@ -184,7 +180,7 @@ class Target:
 
         self.pos: np.ndarray = np.array([x0, y0, z0], dtype=float)
 
-        # Rotta iniziale: punta verso l'origine ±45° (ingaggio più realistico)
+        # Initial heading: towards origin ±45° (realistic engagement)
         toward_origin = np.arctan2(-y0, -x0)
         heading0 = toward_origin + rng.uniform(-np.pi / 4, np.pi / 4)
         self.heading: float = heading0
@@ -192,25 +188,25 @@ class Target:
 
         self.vel: np.ndarray = self._rebuild_vel()
 
-        # ── Stato manovre ──────────────────────────────────────────────
+        # ── Maneuver state ──────────────────────────────────────────────
         self._next_maneuver_t: float = 0.0
         self._tgt_heading: float = heading0
         self._tgt_vz: float = 0.0
 
-        # ── Storie ────────────────────────────────────────────────────
+        # ── Histories ───────────────────────────────────────────────────
         self.pos_history: list[np.ndarray] = [self.pos.copy()]
         self.vel_history: list[np.ndarray] = [self.vel.copy()]
         self.nz_history: list[float] = [1.0]
 
         logger.info(
-            f"[Target] Comparso a ({x0/1000:.1f}, {y0/1000:.1f}, {z0:.0f}m), "
-            f"range={r_km:.1f}km, rotta iniziale={np.degrees(heading0):.0f}°"
+            f"[Target] Spawned at ({x0/1000:.1f}, {y0/1000:.1f}, {z0:.0f}m), "
+            f"range={r_km:.1f}km, initial heading={np.degrees(heading0):.0f}°"
         )
 
-    # ── Metodi privati ─────────────────────────────────────────────────────
+    # ── Private methods ─────────────────────────────────────────────────────
 
     def _rebuild_vel(self) -> np.ndarray:
-        """Ricostruisce il vettore velocità da heading, vz e speed."""
+        """Rebuild velocity vector from heading, vz, and speed."""
         v_h = np.sqrt(max(
             self.cfg.speed_mps ** 2 - self.vz ** 2,
             (0.4 * self.cfg.speed_mps) ** 2,
@@ -222,7 +218,7 @@ class Target:
         ])
 
     def _schedule_maneuver(self, t: float) -> None:
-        """Pianifica la prossima manovra casuale."""
+        """Schedule next random maneuver."""
         wait = self.rng.exponential(self.cfg.maneuver_period_s)
         self._next_maneuver_t = t + wait
 
@@ -234,44 +230,44 @@ class Target:
             self.cfg.climb_rate_max_mps,
         )
         logger.debug(
-            f"[Target] t={t:.1f}s — Nuova manovra: "
+            f"[Target] t={t:.1f}s — New maneuver: "
             f"Δhdg={np.degrees(delta_hdg):.1f}°, vz={self._tgt_vz:.1f}m/s "
-            f"→ prossima fra {wait:.1f}s"
+            f"→ next in {wait:.1f}s"
         )
 
-    # ── Interfaccia pubblica ───────────────────────────────────────────────
+    # ── Public interface ───────────────────────────────────────────────
 
     def step(self, t: float, dt: float) -> np.ndarray:
-        """Avanza lo stato del bersaglio di dt secondi. Ritorna la nuova posizione."""
+        """Advance target state by dt seconds. Returns new position."""
 
-        # Pianifica manovra se necessario
+        # Schedule maneuver if needed
         if t >= self._next_maneuver_t:
             self._schedule_maneuver(t)
 
         speed_h = np.hypot(self.vel[0], self.vel[1])
         speed_h = max(speed_h, self.cfg.speed_mps * 0.5)
 
-        # ── Limite omega da fattore di carico (virata coordinata) ──────
-        # In virata coordinata: L = nz * W → nz = V²/(g·R)
-        # ω_max dal fattore di carico: ω = (nz-1)*g / V
+        # ── Omega limit from load factor (coordinated turn) ──────
+        # Coordinated turn: L = nz * W → nz = V²/(g·R)
+        # Max ω from load factor: ω = (nz-1)*g / V
         omega_nz = (self.cfg.nz_max - 1.0) * G / speed_h
         omega_max = min(self.cfg.heading_rate_max_rads, omega_nz)
 
-        # Cambio rotta limitato al rateo max
+        # Heading change limited by max rate
         delta_hdg_raw = (self._tgt_heading - self.heading + np.pi) % (2 * np.pi) - np.pi
         d_hdg = float(np.clip(delta_hdg_raw, -omega_max * dt, omega_max * dt))
         self.heading += d_hdg
 
-        # Fattore di carico effettivo (per telemetria)
+        # Actual load factor (telemetry)
         omega_actual = abs(d_hdg) / dt if dt > 0 else 0.0
         nz_actual = 1.0 + speed_h * omega_actual / G
         self.nz_history.append(float(np.clip(nz_actual, 1.0, self.cfg.nz_max + 0.5)))
 
-        # ── Velocità verticale ─────────────────────────────────────────
-        vz_accel = 10.0  # [m/s²] — rateo di variazione del rateo di salita
+        # ── Vertical speed ─────────────────────────────────────────────
+        vz_accel = 10.0  # [m/s²] — climb rate change rate
         self.vz += float(np.clip(self._tgt_vz - self.vz, -vz_accel * dt, vz_accel * dt))
 
-        # ── Quota vincolata ────────────────────────────────────────────
+        # ── Altitude constraints ───────────────────────────────────────
         next_z = self.pos[2] + self.vz * dt
         if next_z < self.cfg.altitude_min_m:
             self.vz = 0.0
@@ -282,7 +278,7 @@ class Target:
             self._tgt_vz = -abs(self._tgt_vz) * 0.5
             next_z = self.cfg.altitude_max_m
 
-        # ── Ricostruzione velocità e integrazione posizione ────────────
+        # ── Rebuild velocity and integrate position ──────────────────────
         self.vel = self._rebuild_vel()
         self.pos = np.array([
             self.pos[0] + self.vel[0] * dt,
@@ -305,30 +301,29 @@ class Target:
 
 class Missile:
     """
-    Missile intercettore a terra con guida a Navigazione Proporzionale Vera (TPN).
+    Ground-based interceptor missile with True Proportional Navigation (TPN).
 
-    Legge di guida: True Proportional Navigation
+    Guidance Law: True Proportional Navigation
     ─────────────────────────────────────────────
-    Dati:
-        r⃗  = pos_bersaglio - pos_missile     (vettore LOS)
-        v⃗_rel = vel_bersaglio - vel_missile  (velocità relativa)
+    Data:
+        r⃗  = target_pos - missile_pos     (LOS vector)
+        v⃗_rel = target_vel - missile_vel  (Relative velocity)
 
-    Velocità di chiusura:
-        Vc = -d|r|/dt ≈ -dot(r̂, v⃗_rel)     (positiva se in avvicinamento)
+    Closing velocity:
+        Vc = -d|r|/dt ≈ -dot(r̂, v⃗_rel)     (positive if closing)
 
-    Velocità angolare del LOS (vettore):
+    LOS angular velocity (vector):
         ω⃗_LOS = (r⃗ × v⃗_rel) / |r|²
 
-    Accelerazione comandata (perpendicolare al LOS):
+    Commanded acceleration (perpendicular to LOS):
         a⃗_cmd = N' · Vc · (ω⃗_LOS × r̂_LOS)
 
-    A questa si aggiunge la compensazione gravitazionale [0, 0, +g]
-    per mantenere la guida accurata nella fase di coast.
+    Gravity compensation [0, 0, +g] added for precision during coast phase.
 
-    Fasi operative
+    Operational Phases
     ──────────────
-    BOOST  (0 … burn_time_s): spinta motore lungo il vettore velocità
-    COAST  (dopo burn_time):  guida PN pura + gravity comp
+    BOOST  (0 … burn_time_s): engine thrust along velocity vector
+    COAST  (after burn_time): pure PN guidance + gravity comp
     """
 
     def __init__(self, cfg: MissileConfig) -> None:
@@ -339,14 +334,14 @@ class Missile:
         self.active: bool = False
         self._t_launch: float = 0.0
 
-        # Storie
+        # Histories
         self.pos_history: list[np.ndarray] = [self.pos.copy()]
         self.vel_history: list[np.ndarray] = [self.vel.copy()]
         self.accel_lat_history: list[float] = [0.0]   # [m/s²]
         self.closing_vel_history: list[float] = [0.0]  # [m/s]
 
     def launch(self, initial_target_pos: np.ndarray, t0: float = 0.0) -> None:
-        """Lancia il missile verso la posizione iniziale del bersaglio."""
+        """Launch missile towards initial target position."""
         r_vec = initial_target_pos - self.pos
         r_hat = r_vec / np.linalg.norm(r_vec)
         self.vel = r_hat * self.cfg.launch_speed_mps
@@ -354,9 +349,9 @@ class Missile:
         self._t_launch = t0
 
         logger.info(
-            f"[Missile] Lancio! Range iniziale: "
+            f"[Missile] Launch! Initial range: "
             f"{np.linalg.norm(r_vec)/1000:.1f} km | "
-            f"Quota bersaglio: {initial_target_pos[2]:.0f} m"
+            f"Target altitude: {initial_target_pos[2]:.0f} m"
         )
 
     def step(
@@ -367,22 +362,22 @@ class Missile:
         target_vel: np.ndarray,
     ) -> np.ndarray:
         """
-        Avanza lo stato del missile di dt secondi.
+        Advance missile state by dt seconds.
 
         Args:
-            t          : tempo corrente [s]
-            dt         : passo temporale [s]
-            target_pos : posizione corrente del bersaglio [m]
-            target_vel : velocità corrente del bersaglio [m/s]
+            t          : current time [s]
+            dt         : time step [s]
+            target_pos : current target position [m]
+            target_vel : current target velocity [m/s]
 
         Returns:
-            Nuova posizione del missile [m]
+            New missile position [m]
         """
         if not self.active:
             return self.pos
 
-        # ── Cinematica relativa ────────────────────────────────────────
-        r_vec = target_pos - self.pos   # vettore da missile a bersaglio
+        # ── Relative kinematics ────────────────────────────────────────
+        r_vec = target_pos - self.pos   # vector from missile to target
         r = float(np.linalg.norm(r_vec))
 
         if r < 0.5:
@@ -390,32 +385,32 @@ class Missile:
             return self.pos
 
         r_hat = r_vec / r
-        v_rel = target_vel - self.vel   # velocità relativa (bersaglio - missile)
+        v_rel = target_vel - self.vel   # relative velocity (target - missile)
 
-        # Velocità di chiusura (positiva = avvicinamento)
+        # Closing velocity (positive = closing)
         Vc = float(-np.dot(r_hat, v_rel))
 
-        # Velocità angolare del LOS [rad/s] — vettore
+        # LOS angular velocity [rad/s] — vector
         omega_los: np.ndarray = np.cross(r_vec, v_rel) / (r ** 2)
 
-        # ── Guida PN ──────────────────────────────────────────────────
+        # ── PN Guidance ──────────────────────────────────────────────────
         # a_cmd = N' * Vc * (ω_LOS × r̂)
         a_guidance: np.ndarray = (
             self.cfg.nav_constant * Vc * np.cross(omega_los, r_hat)
         )
 
-        # Compensazione gravitazionale (mantiene precisione in coast)
+        # Gravity compensation (maintains precision in coast)
         a_grav_comp: np.ndarray = np.array([0.0, 0.0, G])
 
         a_lat_cmd: np.ndarray = a_guidance + a_grav_comp
 
-        # Saturazione accelerazione laterale
+        # Lateral acceleration saturation
         a_lat_mag = float(np.linalg.norm(a_lat_cmd))
         if a_lat_mag > self.cfg.accel_max_lat_mps2:
             a_lat_cmd = a_lat_cmd / a_lat_mag * self.cfg.accel_max_lat_mps2
             a_lat_mag = self.cfg.accel_max_lat_mps2
 
-        # ── Propulsione (fase boost) ───────────────────────────────────
+        # ── Propulsion (boost phase) ───────────────────────────────────
         t_since_launch = t - self._t_launch
         v_mag = float(np.linalg.norm(self.vel))
 
@@ -425,27 +420,27 @@ class Missile:
         else:
             a_thrust = np.zeros(3)
 
-        # ── Gravità reale ──────────────────────────────────────────────
+        # ── Real gravity ───────────────────────────────────────────────
         a_gravity = np.array([0.0, 0.0, -G])
 
-        # ── Accelerazione totale e integrazione ───────────────────────
+        # ── Total acceleration and integration ─────────────────────────
         a_total = a_thrust + a_lat_cmd + a_gravity
         self.vel = self.vel + a_total * dt
 
-        # Clipping velocità massima
+        # Max speed clipping
         speed = float(np.linalg.norm(self.vel))
         if speed > self.cfg.speed_max_mps:
             self.vel = self.vel / speed * self.cfg.speed_max_mps
 
         self.pos = self.pos + self.vel * dt
 
-        # ── Controllo quota ────────────────────────────────────────────
+        # ── Altitude check ─────────────────────────────────────────────
         if self.pos[2] < 0.0:
             self.pos[2] = 0.0
             self.active = False
-            logger.warning("[Missile] Ha colpito il suolo — mancato!")
+            logger.warning("[Missile] Hit the ground — missed!")
 
-        # Storie
+        # Histories
         self.pos_history.append(self.pos.copy())
         self.vel_history.append(self.vel.copy())
         self.accel_lat_history.append(a_lat_mag)
@@ -464,9 +459,9 @@ class Missile:
 
 class InterceptionSimulation:
     """
-    Orchestratore della simulazione di intercettazione.
+    Interception simulation orchestrator.
 
-    Esempio d'uso::
+    Usage example::
 
         tcfg = TargetConfig(nz_max=7, speed_mps=300)
         mcfg = MissileConfig(nav_constant=4.5)
@@ -498,22 +493,22 @@ class InterceptionSimulation:
 
     def run(self) -> dict:
         """
-        Esegue la simulazione fino a intercettazione, fuori campo o timeout.
+        Run simulation until interception, out of bounds, or timeout.
 
         Returns:
-            dict con chiavi:
+            dict with keys:
                 intercepted      : bool
-                time_s           : float — tempo di intercettazione o timeout
-                miss_distance_m  : float — distanza minima di avvicinamento
+                time_s           : float — interception time or timeout
+                miss_distance_m  : float — minimum approach distance
                 intercept_pos    : np.ndarray | None
-                missile_speed_mps: float (solo se intercepted)
+                missile_speed_mps: float (only if intercepted)
         """
         dt = self.scfg.dt
 
-        # Lancio immediato verso posizione corrente del bersaglio
+        # Immediate launch towards current target position
         self.missile.launch(self.target.pos, t0=0.0)
 
-        # Distanza iniziale
+        # Initial distance
         self.miss_distances.append(
             float(np.linalg.norm(self.target.pos - self.missile.pos))
         )
@@ -522,23 +517,23 @@ class InterceptionSimulation:
             self.t = round(self.t + dt, 6)
             self.times.append(self.t)
 
-            # Step bersaglio
+            # Target step
             t_pos = self.target.step(self.t, dt)
             t_vel = self.target.vel.copy()
 
-            # Step missile
+            # Missile step
             m_pos = self.missile.step(self.t, dt, t_pos, t_vel)
 
-            # Distanza corrente
+            # Current distance
             dist = float(np.linalg.norm(t_pos - m_pos))
             self.miss_distances.append(dist)
 
-            # Controllo intercettazione
+            # Interception check
             if dist < self.scfg.kill_radius_m:
                 logger.info(
-                    f"[Sim] ✓ INTERCETTATO  t={self.t:.2f}s  "
-                    f"distanza={dist:.1f}m  quota={m_pos[2]:.0f}m  "
-                    f"vel_missile={self.missile.speed:.0f}m/s"
+                    f"[Sim] ✓ INTERCEPTED  t={self.t:.2f}s  "
+                    f"distance={dist:.1f}m  alt={m_pos[2]:.0f}m  "
+                    f"missile_vel={self.missile.speed:.0f}m/s"
                 )
                 self.result = {
                     "intercepted": True,
@@ -550,11 +545,11 @@ class InterceptionSimulation:
                 }
                 return self.result
 
-        # Mancato
+        # Missed
         min_d = min(self.miss_distances)
         logger.info(
-            f"[Sim] ✗ MANCATO — avvicinamento minimo: {min_d:.0f}m "
-            f"| distanza finale: {float(np.linalg.norm(self.target.pos - self.missile.pos)):.0f}m"
+            f"[Sim] ✗ MISSED — min approach: {min_d:.0f}m "
+            f"| final distance: {float(np.linalg.norm(self.target.pos - self.missile.pos)):.0f}m"
         )
         self.result = {
             "intercepted": False,
@@ -565,29 +560,29 @@ class InterceptionSimulation:
         return self.result
 
     def plot(self, show: bool = True) -> plt.Figure:
-        """Genera la visualizzazione multi-panel dell'ingaggio."""
+        """Generate multi-panel engagement visualization."""
         return Visualizer.plot(self, show=show)
 
     def summary(self) -> str:
-        """Stringa riassuntiva del risultato."""
+        """Summary string of the result."""
         if self.result is None:
-            return "Simulazione non ancora eseguita."
+            return "Simulation not yet executed."
         r = self.result
         lines = [
             "=" * 60,
-            f"  RISULTATO : {'INTERCETTATO ✓' if r['intercepted'] else 'MANCATO ✗'}",
-            f"  Tempo     : {r['time_s']:.2f} s",
-            f"  Dist min  : {r['miss_distance_m']:.1f} m",
+            f"  RESULT : {'INTERCEPTED ✓' if r['intercepted'] else 'MISSED ✗'}",
+            f"  Time     : {r['time_s']:.2f} s",
+            f"  Min dist : {r['miss_distance_m']:.1f} m",
         ]
         if r["intercepted"]:
             ip = r["intercept_pos"]
             lines += [
-                f"  Pos. INT  : ({ip[0]/1000:.1f}, {ip[1]/1000:.1f}, {ip[2]:.0f}m)",
-                f"  Vel mis.  : {r['missile_speed_mps']:.0f} m/s",
+                f"  INT Pos  : ({ip[0]/1000:.1f}, {ip[1]/1000:.1f}, {ip[2]:.0f}m)",
+                f"  Mis vel  : {r['missile_speed_mps']:.0f} m/s",
             ]
         lines += [
             "",
-            f"  [Target]  massa={self.tcfg.mass_kg:.0f}kg  "
+            f"  [Target]  mass={self.tcfg.mass_kg:.0f}kg  "
             f"V={self.tcfg.speed_mps:.0f}m/s  nz_max={self.tcfg.nz_max}",
             f"  [Missile] N'={self.mcfg.nav_constant}  "
             f"V_max={self.mcfg.speed_max_mps:.0f}m/s  "
@@ -603,31 +598,31 @@ class InterceptionSimulation:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class Visualizer:
-    """Genera i grafici multi-panel della simulazione."""
+    """Generate multi-panel simulation plots."""
 
-    # Palette (stile "dark terminal")
+    # Palette (dark terminal style)
     BG_MAIN   = "#0d1117"
     BG_PANEL  = "#161b22"
     COL_GRID  = "#21262d"
     COL_SPINE = "#30363d"
     COL_TEXT  = "#e6edf3"
     COL_LABEL = "#8b949e"
-    COL_TARGET  = "#f78166"   # arancione-rosso
-    COL_MISSILE = "#58a6ff"   # azzurro
-    COL_LAUNCH  = "#3fb950"   # verde
-    COL_HIT     = "#ffa657"   # oro
-    COL_MISS    = "#f85149"   # rosso acceso
-    COL_WARN    = "#e3b341"   # giallo
+    COL_TARGET  = "#f78166"   # orange-red
+    COL_MISSILE = "#58a6ff"   # light blue
+    COL_LAUNCH  = "#3fb950"   # green
+    COL_HIT     = "#ffa657"   # gold
+    COL_MISS    = "#f85149"   # bright red
+    COL_WARN    = "#e3b341"   # yellow
 
     @classmethod
     def plot(cls, sim: InterceptionSimulation, show: bool = True) -> plt.Figure:
-        """Genera figura 4-panel: 3D + altitudine + velocità + distanza."""
+        """Generate 4-panel figure: 3D + altitude + speed + distance."""
 
         result  = sim.result
         target  = sim.target
         missile = sim.missile
 
-        # ── Allineamento array ─────────────────────────────────────────
+        # ── Array alignment ────────────────────────────────────────────
         n = min(
             len(sim.times),
             len(target.pos_history),
@@ -644,7 +639,7 @@ class Visualizer:
         Vc      = np.array(missile.closing_vel_history[:n])
         nz_arr  = np.array(target.nz_history[:n])
 
-        # ── Layout figura ──────────────────────────────────────────────
+        # ── Figure layout ──────────────────────────────────────────────
         fig = plt.figure(figsize=(18, 11))
         fig.patch.set_facecolor(cls.BG_MAIN)
 
@@ -662,7 +657,7 @@ class Visualizer:
         ax_mis = fig.add_subplot(gs[2, 2])
         ax_nz  = fig.add_subplot(gs[3, 2])
 
-        # Stile pannelli 2D
+        # 2D panel styling
         for ax in [ax_alt, ax_spd, ax_mis, ax_nz]:
             ax.set_facecolor(cls.BG_PANEL)
             for sp in ax.spines.values():
@@ -673,47 +668,47 @@ class Visualizer:
             ax.title.set_color(cls.COL_TEXT)
             ax.grid(True, color=cls.COL_GRID, linewidth=0.4, linestyle="--")
 
-        # ── 3D: Traiettorie ────────────────────────────────────────────
+        # ── 3D: Trajectories ───────────────────────────────────────────
         ax3d.set_facecolor(cls.BG_MAIN)
 
-        # Ombra a terra del bersaglio
+        # Target ground shadow
         ax3d.plot(
             t_pos[:, 0] / 1000, t_pos[:, 1] / 1000,
             np.zeros(len(t_pos)),
             color=cls.COL_TARGET, lw=0.6, alpha=0.25, linestyle=":",
         )
 
-        # Traiettoria bersaglio
+        # Target trajectory
         ax3d.plot(
             t_pos[:, 0] / 1000, t_pos[:, 1] / 1000, t_pos[:, 2] / 1000,
-            color=cls.COL_TARGET, lw=2.0, label="Bersaglio", alpha=0.9,
+            color=cls.COL_TARGET, lw=2.0, label="Target", alpha=0.9,
         )
 
-        # Traiettoria missile
+        # Missile trajectory
         ax3d.plot(
             m_pos[:, 0] / 1000, m_pos[:, 1] / 1000, m_pos[:, 2] / 1000,
             color=cls.COL_MISSILE, lw=2.0, label="Missile", alpha=0.9,
         )
 
-        # Marker inizio bersaglio
+        # Target start marker
         ax3d.scatter(
             t_pos[0, 0] / 1000, t_pos[0, 1] / 1000, t_pos[0, 2] / 1000,
             color=cls.COL_TARGET, s=80, marker="^", zorder=6,
-            label="Bersaglio t₀",
+            label="Target t₀",
         )
 
-        # Sito di lancio
+        # Launch site
         ax3d.scatter(0, 0, 0, color=cls.COL_LAUNCH, s=120, marker="D",
-                     zorder=7, label="Lancio")
+                     zorder=7, label="Launch")
 
-        # Punto di intercettazione o posizione finale
+        # Interception or final position
         if result and result["intercepted"]:
             ip = result["intercept_pos"] / 1000
             ax3d.scatter(
                 *ip, color=cls.COL_HIT, s=200, marker="*",
                 zorder=8, label=f"Intercept t={result['time_s']:.1f}s",
             )
-            # Linea verticale al punto di intercettazione
+            # Vertical line at interception point
             ax3d.plot(
                 [ip[0], ip[0]], [ip[1], ip[1]], [0, ip[2]],
                 color=cls.COL_HIT, lw=0.8, linestyle="--", alpha=0.5,
@@ -768,36 +763,36 @@ class Visualizer:
                     label="Missile")
         ax_spd.axhline(sim.mcfg.speed_max_mps, color=cls.COL_MISSILE,
                        lw=0.7, linestyle="--", alpha=0.5)
-        ax_spd.set_title("Velocità", fontsize=9)
+        ax_spd.set_title("Speed", fontsize=9)
         ax_spd.set_ylabel("V [m/s]", fontsize=8)
         ax_spd.legend(fontsize=7, facecolor=cls.BG_PANEL,
                       edgecolor=cls.COL_SPINE, labelcolor=cls.COL_TEXT)
 
-        # ── Panel: Distanza di mancanza ────────────────────────────────
+        # ── Panel: Miss distance ───────────────────────────────────────
         ax_mis.semilogy(times, miss_d, color=cls.COL_WARN, lw=1.5)
         ax_mis.axhline(sim.scfg.kill_radius_m, color=cls.COL_MISS,
                        lw=1.2, linestyle="--",
                        label=f"Kill radius ({sim.scfg.kill_radius_m:.0f}m)")
-        ax_mis.set_title("Distanza Missile–Bersaglio", fontsize=9)
-        ax_mis.set_ylabel("Distanza [m]", fontsize=8)
+        ax_mis.set_title("Missile-Target Distance", fontsize=9)
+        ax_mis.set_ylabel("Distance [m]", fontsize=8)
         ax_mis.legend(fontsize=7, facecolor=cls.BG_PANEL,
                       edgecolor=cls.COL_SPINE, labelcolor=cls.COL_TEXT)
 
-        # ── Panel: nz bersaglio ────────────────────────────────────────
+        # ── Panel: Target nz ───────────────────────────────────────────
         ax_nz.plot(times[:len(nz_arr)], nz_arr[:len(times)],
                    color=cls.COL_TARGET, lw=1.2)
         ax_nz.axhline(sim.tcfg.nz_max, color=cls.COL_MISS,
                       lw=0.9, linestyle="--",
                       label=f"nz_max = {sim.tcfg.nz_max}")
-        ax_nz.set_title("Fattore di Carico Bersaglio", fontsize=9)
+        ax_nz.set_title("Target Load Factor", fontsize=9)
         ax_nz.set_ylabel("nz [-]", fontsize=8)
-        ax_nz.set_xlabel("Tempo [s]", fontsize=8)
+        ax_nz.set_xlabel("Time [s]", fontsize=8)
         ax_nz.legend(fontsize=7, facecolor=cls.BG_PANEL,
                      edgecolor=cls.COL_SPINE, labelcolor=cls.COL_TEXT)
 
-        # ── Super-title con parametri chiave ───────────────────────────
+        # ── Super-title with key parameters ────────────────────────────
         stats = (
-            f"Bersaglio: {sim.tcfg.mass_kg/1000:.0f}t · "
+            f"Target: {sim.tcfg.mass_kg/1000:.0f}t · "
             f"V={sim.tcfg.speed_mps:.0f}m/s · nz_max={sim.tcfg.nz_max}g   "
             f"│   Missile: N'={sim.mcfg.nav_constant} · "
             f"V_max={sim.mcfg.speed_max_mps:.0f}m/s · "
@@ -809,7 +804,7 @@ class Visualizer:
         if sim.scfg.save_fig:
             fig.savefig(sim.scfg.save_fig, dpi=150, bbox_inches="tight",
                         facecolor=cls.BG_MAIN)
-            logger.info(f"[Visualizer] Figura salvata in '{sim.scfg.save_fig}'")
+            logger.info(f"[Visualizer] Figure saved to '{sim.scfg.save_fig}'")
 
         if show:
             plt.show()
@@ -823,64 +818,64 @@ class Visualizer:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Simulazione 3D di intercettazione missilistica",
+        description="3D Missile Interception Simulation",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     # Target
-    tg = p.add_argument_group("Bersaglio (Target)")
+    tg = p.add_argument_group("Target")
     tg.add_argument("--target-mass",    type=float, default=15000.0,
-                    metavar="kg",   help="Massa del bersaglio [kg]")
+                    metavar="kg",   help="Target mass [kg]")
     tg.add_argument("--target-speed",   type=float, default=250.0,
-                    metavar="m/s",  help="Velocità di crociera [m/s]")
+                    metavar="m/s",  help="Cruise speed [m/s]")
     tg.add_argument("--nz-max",         type=float, default=5.0,
-                    metavar="g",    help="Fattore di carico max strutturale [-]")
+                    metavar="g",    help="Max structural load factor [-]")
     tg.add_argument("--alt-min",        type=float, default=3000.0,
-                    metavar="m",    help="Quota minima [m AGL]")
+                    metavar="m",    help="Min altitude [m AGL]")
     tg.add_argument("--alt-max",        type=float, default=12000.0,
-                    metavar="m",    help="Quota massima [m AGL]")
+                    metavar="m",    help="Max altitude [m AGL]")
     tg.add_argument("--maneuver-period", type=float, default=20.0,
-                    metavar="s",    help="Periodo medio tra manovre [s]")
+                    metavar="s",    help="Avg maneuver period [s]")
     tg.add_argument("--spawn-range",    type=float, default=40.0,
-                    metavar="km",   help="Range max comparsa bersaglio [km]")
+                    metavar="km",   help="Max spawn range [km]")
 
     # Missile
     mg = p.add_argument_group("Missile")
     mg.add_argument("--missile-mass",   type=float, default=300.0,
-                    metavar="kg",   help="Massa missile [kg]")
+                    metavar="kg",   help="Missile mass [kg]")
     mg.add_argument("--thrust",         type=float, default=60000.0,
-                    metavar="N",    help="Spinta boost [N]")
+                    metavar="N",    help="Boost thrust [N]")
     mg.add_argument("--burn-time",      type=float, default=5.0,
-                    metavar="s",    help="Durata combustione [s]")
+                    metavar="s",    help="Burn duration [s]")
     mg.add_argument("--missile-speed",  type=float, default=900.0,
-                    metavar="m/s",  help="Velocità massima missile [m/s]")
+                    metavar="m/s",  help="Max missile speed [m/s]")
     mg.add_argument("--accel-max",      type=float, default=300.0,
-                    metavar="m/s2", help="Accelerazione laterale max [m/s²]")
+                    metavar="m/s2", help="Max lateral acceleration [m/s²]")
     mg.add_argument("--nav-constant",   type=float, default=4.0,
-                    metavar="N'",   help="Costante di navigazione PN N'")
+                    metavar="N'",   help="PN navigation constant N'")
 
-    # Simulazione
-    sg = p.add_argument_group("Simulazione")
+    # Simulation
+    sg = p.add_argument_group("Simulation")
     sg.add_argument("--dt",             type=float, default=0.05,
-                    metavar="s",    help="Passo temporale [s]")
+                    metavar="s",    help="Time step [s]")
     sg.add_argument("--t-max",          type=float, default=120.0,
-                    metavar="s",    help="Tempo massimo simulazione [s]")
+                    metavar="s",    help="Max sim time [s]")
     sg.add_argument("--kill-radius",    type=float, default=30.0,
-                    metavar="m",    help="Raggio di kill [m]")
+                    metavar="m",    help="Kill radius [m]")
     sg.add_argument("--seed",           type=int,   default=None,
-                    help="Seed casuale (None = casuale)")
+                    help="Random seed (None = random)")
     sg.add_argument("--no-plot",        action="store_true",
-                    help="Non mostrare i grafici")
+                    help="Disable plotting")
     sg.add_argument("--save",           type=str,   default=None,
-                    metavar="FILE", help="Salva figura in FILE (es. sim.png)")
+                    metavar="FILE", help="Save figure to FILE (e.g. sim.png)")
     sg.add_argument("--runs",           type=int,   default=1,
-                    metavar="N",    help="Esegui N run (statistiche multi-run)")
+                    metavar="N",    help="Execute N runs (multi-run stats)")
 
     return p
 
 
 def single_run(args: argparse.Namespace) -> dict:
-    """Esegui un singolo run e ritorna il risultato."""
+    """Execute a single run and return the result."""
     tcfg = TargetConfig(
         mass_kg             = args.target_mass,
         speed_mps           = args.target_speed,
@@ -918,7 +913,7 @@ def single_run(args: argparse.Namespace) -> dict:
 
 
 def multi_run(args: argparse.Namespace) -> None:
-    """Esegui N run con seed incrementali e stampa statistiche aggregate."""
+    """Execute N runs with incremental seeds and print aggregate stats."""
     import copy
     intercepted = 0
     times: list[float] = []
@@ -927,7 +922,7 @@ def multi_run(args: argparse.Namespace) -> None:
     base_seed = args.seed if args.seed is not None else 0
 
     logger.info(f"\n{'─'*50}")
-    logger.info(f"Multi-run: {args.runs} simulazioni")
+    logger.info(f"Multi-run: {args.runs} simulations")
     logger.info(f"{'─'*50}")
 
     for i in range(args.runs):
@@ -965,8 +960,8 @@ def multi_run(args: argparse.Namespace) -> None:
     print(f"\n{'═'*50}")
     print(f"  Pk (kill probability) : {intercepted}/{n} = {intercepted/n*100:.1f}%")
     if times:
-        print(f"  Tempo medio interc.   : {np.mean(times):.1f} s ± {np.std(times):.1f}")
-    print(f"  Dist min media        : {np.mean(min_dists):.0f} m")
+        print(f"  Avg intercept time    : {np.mean(times):.1f} s ± {np.std(times):.1f}")
+    print(f"  Avg min miss distance : {np.mean(min_dists):.0f} m")
     print(f"{'═'*50}")
 
 
