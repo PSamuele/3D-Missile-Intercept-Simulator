@@ -46,14 +46,14 @@ While this simulation establishes a robust foundation, several areas are planned
 
 ---
 
-## 7.0 Requisiti
+## 7.0 Requirements
 
-Per eseguire questa simulazione, è necessario avere Python installato insieme alle seguenti librerie:
+To run this simulation, you need Python installed along with the following libraries:
 
-*   **NumPy:** Utilizzato per le operazioni numeriche e i calcoli vettoriali.
-*   **Matplotlib:** Utilizzato per la visualizzazione dei dati e la generazione di grafici 3D.
+*   **NumPy:** Used for numerical operations and vector calculations.
+*   **Matplotlib:** Used for data visualization and generating 3D plots.
 
-È possibile installare queste dipendenze tramite pip con il seguente comando:
+You can install these dependencies via pip with the following command:
 ```bash
 pip install numpy matplotlib
 ```
